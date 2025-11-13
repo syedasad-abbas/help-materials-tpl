@@ -1,0 +1,40 @@
+#command to create a server
+
+curl -sfL https://get.rke2.io | sh -
+ssystemctl enable rke2-server.service
+systemctl start rke2-server.service
+
+#copy kubectl to the binary path
+
+cp /var/lib/rancher/rke2/bin/kubectl /usr/local/bin/kubectl
+
+#create token 
+
+rke2 token create --ttl=24h --description "ansible worker batch"
+
+#downloading the agent node
+curl -sfL https://get.rke2.io | INSTALL_RKE2_TYPE="agent" sh -
+
+#config of the agent nodes
+
+mkdir -p /etc/rancher/rke2/
+RKE2_SERVER_NODE_IP=46.62.247.90
+
+#Set the RKE2 server address
+
+echo "server: https://$RKE2_SERVER_NODE_IP:9345" > /etc/rancher/rke2/config.yaml
+
+#Use the token retrieved from the master node
+
+TOKEN=K1067af52195fe11e91c80f84c356f8e0678276957f06da3b50a58f6c3f8554971f::server:9a5133374788a9e76f44416aa709bebe
+
+echo "token: $TOKEN" >> /etc/rancher/rke2/config.yaml
+
+#check pods 
+kubectl get pods --kubeconfig=/etc/rancher/rke2/rke2.yaml
+export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+
+
+https://github.com/derailed/k9s/releases/download/v0.50.9/k9s_linux_amd64.deb
+
+

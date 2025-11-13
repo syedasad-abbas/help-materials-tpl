@@ -1,0 +1,87 @@
+
+#-----------------------------------------------
+Step 1: clonning the jambonz helm repository (vm1)
+#-----------------------------------------------
+git clone https://github.com/jambonz/helm-charts.git
+
+#-----------------------------------------------
+Step 2: label nodes for sip and rtp 
+#-----------------------------------------------
+kubectl label nodes vm2 voip-environment=sip
+kubectl taint nodes vm2 sip=true:NoSchedule
+kubectl label nodes vm3 voip-environment=rtp
+kubectl taint nodes vm3 rtp=true:NoSchedule
+
+#-----------------------------------------------
+Step 3: confirm the labels and taints
+#-----------------------------------------------
+kubectl get nodes --show-labels
+kubectl describe node vm2 | grep -i taint
+kubectl describe node vm3 | grep -i taint
+
+# ---------------------------------------------
+# Step 4: Install Helm 3
+# ---------------------------------------------
+curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+helm version
+
+# ---------------------------------------------
+# Step 5: edit values.yaml to set names and images 
+# ---------------------------------------------
+cassandra:
+    enabled: false
+    
+     homer:
+    hostname: homer.jambonz.test
+  grafana:
+    hostname: grafana.test
+
+freeswitch: 
+  image: syedasadabbas/drachtio-freeswitch-mrf-custom:0.25-700
+
+sbcOutbound: 
+  image: syedasadabbas/sbc-outbound:latest
+
+livenessProbe:
+            httpGet:
+              path: /alive
+              
+startupProbe:
+            httpGet:
+              path: /alive
+
+# ---------------------------------------------
+# Step 6:listing the pods running on port 80
+# ---------------------------------------------
+kubectl get pods -A -o jsonpath='{range .items[*]}{.metadata.namespace}{"\t"}{.metadata.name}{"\t"}{range .spec.containers[*].ports[*]}{.hostPort}{"/"}{.protocol}{"\t"}{end}{"\n"}{end}' \
+| grep -E '(^|[^0-9])(80/TCP|5060/TCP|5060/UDP|9022/TCP)'
+
+helm list -n jambonz
+helm show values jambonz/jambonz | grep -A5 daemonset
+
+# ---------------------------------------------
+# Step 7: customize rtp-engine entrypoint
+# ---------------------------------------------
+nano entrypoint.sh 
+
+add volume and volumemount in deployment.yaml 
+
+# ---------------------------------------------
+# Step 7:create a node-app for outbound call 
+# ---------------------------------------------
+
+
+
+# ---------------------------------------------
+# Step 8: files on git 
+# ---------------------------------------------
+helm-charts 
+git remote -v 
+git remote remove origin
+
+jambonz
+out-bound-node
+sound
+
+
+

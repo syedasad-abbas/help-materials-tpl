@@ -1,0 +1,45 @@
+        - name: rtpengine
+          image: jambonz/rtpengine:0.1.6
+          command: ["bash", "/newentrypoint.sh"]
+          volumeMounts:
+            - name: rtpengineentrypoint
+              mountPath: /newentrypoint.sh
+              subPath: entrypoint.sh
+          args:
+            - rtpengine
+            - '--listen-udp=22222'
+            - '--listen-http=22222'
+            - '--homer'
+            - heplify-server.jambonz:9060
+            - '--homer-protocol'
+            - udp
+            - '--homer-id'
+            - '11'
+            - '--log-level'
+            - '7'
+          ports:
+            - containerPort: 22222
+              protocol: TCP
+          env:
+            - name: CLOUD
+              value: none
+            - name: IMDSv2
+            - name: DRACHTIO_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: jambonz-secrets
+                  key: DRACHTIO_SECRET
+          resources: {}
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          imagePullPolicy: IfNotPresent
+
+      # ✅ volumes must be here, not inside container
+      volumes:
+        - name: rtpengineentrypoint
+          configMap:
+            name: rtpengineentrypoint
+            items:
+              - key: entrypoint.sh
+                path: entrypoint.sh
+

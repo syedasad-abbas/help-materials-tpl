@@ -1,0 +1,1382 @@
+
+# ---------------------------------------------
+# Step 1: Troubleshoot Node Status
+# ---------------------------------------------
+echo "Checking why node-03 is NotReady..."
+kubectl describe node node-03
+kubectl get pods -A | grep node-03
+
+# ---------------------------------------------
+# Step 2: Label nodes for VoIP workloads
+# ---------------------------------------------
+echo "Labeling node-02 for SIP and RTP workloads..."
+kubectl label node node-02 voip-sip=true
+ kubectl label node node-02 voip-rtp-
+ kubectl label node node-03 voip-rtp=true
+kubectl label node node-02 voip-rtp=true
+kubectl taint node node-02 voip-environment=sip:NoSchedule
+kubectl get nodes --show-labels
+
+kubectl label node node-01 voip-environment=sip --overwrite
+kubectl label node node-03 voip-environment=rtp --overwrite
+
+
+# ---------------------------------------------
+# Step 3: Install Helm 3
+# ---------------------------------------------
+echo "Installing Helm 3..."
+curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+helm version
+
+# ---------------------------------------------
+# Step 4: Add Jambonz Helm repo and update
+# ---------------------------------------------
+echo "Adding Jambonz Helm repository..."
+helm repo add jambonz https://jambonz.github.io/helm-charts/
+helm repo update
+helm search repo jambonz
+
+# ---------------------------------------------
+# Step 5: Create namespace and deploy Jambonz
+# ---------------------------------------------
+echo "Creating namespace 'jambonz'..."
+kubectl create namespace jambonz
+
+echo "Installing Jambonz release..."
+helm install jambonz-release jambonz/jambonz \
+  --namespace jambonz \
+  --create-namespace \
+  --set webapp.hostname=localhost \
+  --set api.hostname=localhost \
+  --set monitoring.grafana.hostname=localhost \
+  --set monitoring.homer.hostname=localhost \
+  --set cloud=none
+
+# ---------------------------------------------
+# Step 6: Setup local storage
+# ---------------------------------------------
+echo "Deploying Local Path Provisioner..."
+kubectl apply -f https://raw.githubusercontent.com/rancher/local-path-provisioner/master/deploy/local-path-storage.yaml
+
+echo "Setting local-path as default StorageClass..."
+kubectl patch storageclass local-path -p '{"metadata": {"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}'
+
+# ---------------------------------------------
+# Step 7: Apply custom values for Jambonz
+# ---------------------------------------------
+mkdir -p /home/asad/jambonz
+echo "Edit /home/asad/jambonz/values-local.yaml with your custom values"
+nano /home/asad/jambonz/values-local.yaml
+
+echo "Upgrading Jambonz release with local values..."
+helm upgrade jambonz-release jambonz/jambonz \
+  -n jambonz \
+  -f /home/asad/jambonz/values-local.yaml
+
+# ---------------------------------------------
+# Step 8: Verify PVCs and StorageClasses
+# ---------------------------------------------
+kubectl get pvc -n jambonz
+kubectl get storageclass
+
+# ---------------------------------------------
+# Step 9: Install Calico networking
+# ---------------------------------------------
+echo "Applying Calico network plugin..."
+kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.27.3/manifests/calico.yaml
+
+# ---------------------------------------------
+# Step 10: Troubleshoot local-path-provisioner pod
+# ---------------------------------------------
+kubectl describe pod -n local-path-storage local-path-provisioner-7d6dddf9dd-x4wvr
+
+# ---------------------------------------------
+# Step 11: Apply Canal RBAC fix (if needed)
+# ---------------------------------------------
+kubectl apply -f canal-rbac-fix.yaml
+kubectl -n kube-system delete pod -l k8s-app=canal
+kubectl rollout restart daemonset jambonz-sbc-sip -n jambonz
+kubectl get daemonset jambonz-sbc-sip -n jambonz -o yaml | grep -A 20 sidecar
+kubectl get daemonset -n jambonz
+kubectl describe daemonset sbc-sip -n jambonz
+
+# ---------------------------------------------
+# Step 12: Final check of all pods
+# ---------------------------------------------
+kubectl get pods -A
+kubectl get pods -n jambonz -o wide | grep node-02
+
+# ---------------------------------------------
+
+# ---------------------------------------------
+ss -tuln | grep -E ':5060|:9022|:80'
+sudo netstat -tunlp | grep 5060
+nc -zv 192.168.1.25 5060
+kubectl get configmap jambonz-sbc-sip-conf -n jambonz -o yaml
+kubectl get pods -A -o json | jq '.items[] | select(.spec.containers[].ports[]? | .hostPort==5060) | {name:.metadata.name, node:.spec.nodeName, hostPort:.spec.containers[].ports[].hostPort}'
+sudo netstat -tulnp | grep -E '5060|5061|10[0-9]{3}' 
+sudo tcpdump -i lo port 80
+nc -vu -w1 192.168.1.26 40000
+ps aux | grep node
+# ---------------------------------------------
+listing the pods running on port 80
+# ---------------------------------------------
+helm list -n jambonz
+helm show values jambonz/jambonz | grep -A5 daemonset
+
+
+
+kubectl get pods -A -o jsonpath='{range .items[*]}{.metadata.namespace}{"\t"}{.metadata.name}{"\t"}{range .spec.containers[*].ports[*]}{.hostPort}{"/"}{.protocol}{"\t"}{end}{"\n"}{end}' \
+| grep -E '(^|[^0-9])(80/TCP|5060/TCP|5060/UDP|9022/TCP)'
+
+# ---------------------------------------------
+fixing the sbc sip daemonset 
+# ---------------------------------------------
+
+check proper label 
+tolerations:
+        - key: voip-environment
+          operator: Equal
+          value: sip
+          effect: NoSchedule
+      hostAliases:
+        - ip: 192.168.1.25
+          hostnames:
+            - jambonz.local
+edit 
+	drachtio host
+   node-ip 
+remove 
+  --cloud-deployment
+
+# ---------------------------------------------
+fixing rtp engine 
+# ---------------------------------------------
+remove cloud deployment by adding custiom deployement 
+   create a coonfig map with entry point 
+kubectl create configmap rtpengineentrypoint \ -n jambonz \ --from-file=entrypoint.sh=/home/asad/jambonz/configs/entrypoint.sh \ -o yaml --dry-run=client | kubectl apply -f -
+
+      - name: rtpengine
+          image: jambonz/rtpengine:0.1.6
+          command: ["bash", "/newentrypoint.sh"]
+          volumeMounts:
+            - name: rtpengineentrypoint
+              mountPath: /newentrypoint.sh
+              subPath: entrypoint.sh
+          args:
+            - rtpengine
+            - '--listen-udp=22222'
+            - '--listen-http=22222'
+            - '--homer'
+            - heplify-server.jambonz:9060
+            - '--homer-protocol'
+            - udp
+            - '--homer-id'
+            - '11'
+            - '--log-level'
+            - '7'
+          ports:
+            - containerPort: 22222
+              protocol: TCP
+          env:
+            - name: CLOUD
+              value: none
+            - name: IMDSv2
+            - name: DRACHTIO_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: jambonz-secrets
+                  key: DRACHTIO_SECRET
+          resources: {}
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          imagePullPolicy: IfNotPresent
+
+      # ✅ volumes must be here, not inside container
+      volumes:
+        - name: rtpengineentrypoint
+          configMap:
+            name: rtpengineentrypoint
+            items:
+              - key: entrypoint.sh
+                path: entrypoint.sh
+
+# ---------------------------------------------
+information of adding user 
+# ---------------------------------------------
+INSERT INTO accounts (
+    account_sid,
+    name,
+    service_provider_sid,
+    is_active,
+    webhook_secret
+) VALUES (
+    @acc,
+    'test-account',
+    '2708b1b3-2736-40ea-b502-c53d8396247f',
+    1,
+    'testsecret'
+);
+
+
+SELECT account_sid, name, service_provider_sid, is_active, webhook_secret
+FROM accounts
+WHERE account_sid = @acc;
+
+
+INSERT INTO clients (
+    client_sid,
+    account_sid,
+    is_active,
+    username,
+    password,
+    allow_direct_app_calling,
+    allow_direct_queue_calling,
+    allow_direct_user_calling
+) VALUES
+(@alice, @acc, 1, 'alice', 'test123', 1, 1, 1),
+(@bob,   @acc, 1, 'bob',   'test234', 1, 1, 1);
+
+SELECT client_sid, account_sid, username FROM clients WHERE account_sid = @acc;
+#-------------------------------------------
+credentials for the monitering tools 
+# ---------------------------------------------
+Username: admin
+Password: sipcapture
+Username: admin
+Password: Asadabbas/44
+
+http://192.168.1.25:32582/
+http://192.168.1.25:31096/
+http://192.168.1.25:32471/
+http://localhost:3000/v1/health
+ http://grafana.jambonz.local:32582/?orgId=1
+ http://192.168.1.23:30751/dashboard/home
+tpl@tpl:~$ kubectl port-forward svc/api-server -n jambonz 3000:3000
+Forwarding from 127.0.0.1:3000 -> 3000
+
+
+#------------------------------------------
+applying node.js app
+# ---------------------------------------------
+# build the docker image
+docker build -t your-dockerhub-username/jambonz-node-app:latest .
+
+# push to docker hub (or private registry)
+docker push your-dockerhub-username/jambonz-node-app:latest
+#Deploy to Kubernetes
+kubectl apply -f deployment.yaml
+#Call the Node.js Service from inside the cluster
+# ---------------------------------------------
+curl command to make an outbound call
+# ---------------------------------------------
+
+curl -X POST http://jambonz-node-app.jambonz:3000/call \
+  -H "Content-Type: application/json" \
+  -d '{"from":"+1000000000","to":"+2000000000"}'
+  
+  curl -s http://api-server.jambonz:3000/health
+
+curl -H "Authorization: Bearer 1cf2f4f4-64c4-4249-9a3e-5bb4cb597c2a" \
+  http://api-server.jambonz:3000/v1/Accounts/9351f46a-678c-43f5-b8a6-d4eb58d131af
+  
+  
+  via api 
+
+curl -X POST -H "Authorization: Bearer 1cf2f4f4-64c4-4249-9a3e-5bb4cb597c2a" \
+     -H "Content-Type: application/json" \
+     -d '{"from":"sip:zoiper@jambonz.local","to":{"type":"sip","sipUri":"sip:user2@jambonz.local"},"application_sid":"7087fe50-8acb-4f3b-b820-97b573723aab","timeout":30,"tag":{"source":"node-app"}}' \
+     http://api-server.jambonz:3000/v1/Accounts/9351f46a-678c-43f5-b8a6-d4eb58d131af/Calls
+
+
+
+curl -X POST \
+  -H "Authorization: Bearer 1cf2f4f4-64c4-4249-9a3e-5bb4cb597c2a" \
+  -H "Content-Type: application/json" \
+  -d '{
+        "from": "sip:2000@jambonz.local",
+        "to": {
+          "type": "sip",
+          "sipUri": "sip:1000@jambonz.local:5060"
+        },
+        "application_sid": "91e50c52-83b6-498d-beee-bcac1d8897bd",
+        "timeout": 30,
+        "tag": {"source":"curl"}
+      }' \
+  http://localhost:3000/v1/Accounts/9351f46a-678c-43f5-b8a6-d4eb58d131af/Calls
+  
+  
+  curl -X POST   -H "Authorization: Bearer 1cf2f4f4-64c4-4249-9a3e-5bb4cb597c2a"   -H "Content-Type: application/json"   -d '{
+        "from": "sip:2000@jambonz.local",
+        "to": {
+          "type": "sip",
+          "sipUri": "sip:1000@jambonz.local:5060"
+        },
+        "application_sid": "f62d62be-16d8-4f85-afa1-e1689bc8c014",
+        "timeout": 30,
+        "tag": {"source":"curl"}
+      }'   http://localhost:42065/v1/Accounts/9351f46a-678c-43f5-b8a6-d4eb58d131af/Calls
+      
+and works 
+  curl -X POST http://localhost:37791/v1/Accounts/9351f46a-678c-43f5-b8a6-d4eb58d131af/Calls \
+  -H "Authorization: Bearer 1cf2f4f4-64c4-4249-9a3e-5bb4cb597c2a" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "application_sid": "f62d62be-16d8-4f85-afa1-e1689bc8c014",
+    "from": "sip:2000@jambonz.local",
+    "to": {
+        "type": "sip",
+        "sipUri": "sip:1000@jambonz.local:5060",
+        "trunk": "sip"
+    },
+    "timeout": 30,
+    "tag": {"source":"curl"}
+  }'
+
+# ---------------------------------------------
+Node.js for application 
+# ---------------------------------------------
+ssh asad@192.168.1.25
+nano webhook.js
+sudo apt update
+sudo apt install -y nodejs npm
+node --version
+npm --version
+cd /home/asad
+npm install express
+node /home/asad/webhook.js
+kubectl exec -it feature-server-65656b84cb-bpgj7 -n jambonz -c feature-server -- bash
+curl -X POST http://jambonz.local:5000/status -H "Content-Type: application/json" -d '{"callId": "test-call", "status": "ringing"}'
+
+
+------------------------
+# ---------------------------------------------
+deleting all the ecivted pods in their own namspaces 
+# ---------------------------------------------
+kubectl get pods --all-namespaces --field-selector=status.phase=Failed -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name --no-headers | \
+while read namespace pod; do
+  kubectl delete pod "$pod" -n "$namespace"
+done
+
+
+
+
+
+
+tcpdump ?
+deploy rancher
+entrypoint 
+lenz can be installed
+keep an eye on the entrypoint 
+
+kubectl exec -it cassandra-0 -- cqlsh
+CREATE KEYSPACE jaeger_v1_dc1 
+WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1};
+
+
+
+router check kry aik pod
+1 pod 
+sngrep sip
+outbound logs
+api-sever 
+deployemt edit kr k change kry
+set log level debug 
+http://api.jambonz.local/v1
+redis.jambonz
+
+
+ - '--listen-udp=22222'
+            - '--listen-http=22222'
+            - '--homer'
+            - heplify-server.jambonz:9060
+            - '--homer-protocol'
+            - udp
+            - '--homer-id'
+            - '11'
+            - '--log-level'
+            - '7'
+---------------------------------------
+rtp engine package 
+---------------------------------------
+mkdir -p /var/lib/dpkg
+touch /var/lib/dpkg/status
+
+dpkg --configure -a
+apt-get update
+
+mv /var/lib/dpkg/info /var/lib/dpkg/info.bad
+mkdir /var/lib/dpkg/info
+apt-get update
+apt-get -f install
+
+10.43.220.10
+# ← Add this here
+      - name: K8S_POD_IP
+        valueFrom:
+          fieldRef:
+            fieldPath: status.podIP
+# ---------------------------------------------
+playing a prompt 
+# ---------------------------------------------
+create a wave file 
+ mkdir -p /home/asad/jambonz-audio
+ sudo apt install sox
+sox -n -r 8000 -c 1 /home/asad/jambonz-audio/hello.wav synth 1 sine 440
+Record your own voice 
+	sox -d -r 8000 -c 1 /opt/audio/intro.wav trim 0 3
+
+ nano /home/asad/jambonz/configs/api-server-configmap.yaml
+ kubectl apply -f /home/asad/jambonz/configs/api-server-configmap.yaml
+ConfigMap:
+
+	apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-server-config
+  namespace: jambonz
+data:
+  AUDIO_PATH: "/opt/audio"
+
+deployment of the feature-server :
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: feature-server
+  namespace: jambonz
+  uid: 82d6bc84-508a-48cd-804d-ab20ea6625f7
+  resourceVersion: '953774'
+  generation: 10
+  creationTimestamp: '2025-10-08T18:29:34Z'
+  labels:
+    app: feature-server
+    app.kubernetes.io/instance: jambonz-release
+    app.kubernetes.io/managed-by: Helm
+    k8slens-edit-resource-version: v1
+  annotations:
+    cluster-autoscaler.kubernetes.io/safe-to-evict: 'true'
+    deployment.kubernetes.io/revision: '10'
+    meta.helm.sh/release-name: jambonz-release
+    meta.helm.sh/release-namespace: jambonz
+  selfLink: /apis/apps/v1/namespaces/jambonz/deployments/feature-server
+status:
+  observedGeneration: 10
+  replicas: 1
+  updatedReplicas: 1
+  readyReplicas: 1
+  availableReplicas: 1
+  conditions:
+    - type: Available
+      status: 'True'
+      lastUpdateTime: '2025-10-17T15:54:25Z'
+      lastTransitionTime: '2025-10-17T15:54:25Z'
+      reason: MinimumReplicasAvailable
+      message: Deployment has minimum availability.
+    - type: Progressing
+      status: 'True'
+      lastUpdateTime: '2025-10-17T19:30:11Z'
+      lastTransitionTime: '2025-10-14T18:38:07Z'
+      reason: NewReplicaSetAvailable
+      message: ReplicaSet "feature-server-76f468f655" has successfully progressed.
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: feature-server
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        app: feature-server
+      annotations:
+        kubectl.kubernetes.io/restartedAt: '2025-10-14T18:09:51.170Z'
+    spec:
+      volumes:
+        - name: temp-audio-volume
+          emptyDir: {}
+        - name: voicemail-phraselist
+          configMap:
+            name: voicemail-phraselist
+            items:
+              - key: voicemail-phraselist.json
+                path: voicemail-phraselist.json
+            defaultMode: 420
+        - name: audio-files
+          hostPath:
+            path: /home/asad/jambonz-audio
+            type: Directory
+        - name: feature-server-config
+          configMap:
+            name: feature-server-config
+            items:
+              - key: AUDIO_PATH
+                path: audio_path
+            defaultMode: 420
+      initContainers:
+        - name: db-create-wait
+          image: kanisterio/mysql-sidecar:0.40.0
+          command:
+            - sh
+            - '-c'
+            - >
+              until mysql -u jambones -D jambones -h mysql.jambonz
+              -p${MYSQL_PASSWORD} --protocol=tcp -e "select count(*) from
+              accounts";
+
+              do 
+                sleep 5
+              done
+          env:
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: jambonz-secrets
+                  key: MYSQL_PASSWORD
+          resources: {}
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          imagePullPolicy: IfNotPresent
+      containers:
+        - name: drachtio
+          image: drachtio/drachtio-server:0.8.24
+          args:
+            - drachtio
+            - '--contact'
+            - sip:*:5060;transport=udp
+            - '--mtu'
+            - '4096'
+            - '--loglevel'
+            - info
+            - sofia-loglevel
+            - '3'
+          ports:
+            - containerPort: 9022
+              protocol: TCP
+          env:
+            - name: CLOUD
+              value: none
+            - name: IMDSv2
+            - name: SOFIA_SEARCH_DOMAINS
+              value: '1'
+            - name: SOFIA_SRES_NO_CACHE
+              value: '1'
+            - name: DRACHTIO_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: jambonz-secrets
+                  key: DRACHTIO_SECRET
+          resources: {}
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /bin/sh
+                  - '-c'
+                  - >-
+                    while $(curl --output /dev/null --silent --head --fail-early
+                    http://127.0.0.1:3000); do printf '.'; sleep 10; done
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          imagePullPolicy: IfNotPresent
+        - name: freeswitch
+          image: drachtio/drachtio-freeswitch-mrf:0.5.6
+          args:
+            - freeswitch
+            - '--codec-answer-generous'
+          ports:
+            - containerPort: 8081
+              protocol: TCP
+          env:
+            - name: MOD_AUDIO_FORK_SUBPROTOCOL_NAME
+              value: audio.jambonz.org
+            - name: MOD_AUDIO_FORK_SERVICE_THREADS
+              value: '1'
+            - name: MOD_AUDIO_FORK_BUFFER_SECS
+              value: '3'
+            - name: SOFIA_LOGLEVEL
+              value: '9'
+          resources: {}
+          volumeMounts:
+            - name: temp-audio-volume
+              mountPath: /tmp
+            - name: audio-files
+              mountPath: /opt/audio
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /bin/sh
+                  - '-c'
+                  - >-
+                    while $(curl --output /dev/null --silent --head --fail-early
+                    http://127.0.0.1:3000); do printf '.'; sleep 10; done
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          imagePullPolicy: IfNotPresent
+        - name: feature-server
+          image: jambonz/feature-server:0.8.5-rc20
+          ports:
+            - containerPort: 3000
+              protocol: TCP
+          env:
+            - name: AWS_REGION
+              value: us-west-1
+            - name: NODE_ENV
+              value: production
+            - name: HTTP_PORT
+              value: '3000'
+            - name: JAMBONES_LOGLEVEL
+              value: info
+            - name: JAMBONES_TTS_TRIM_SILENCE
+              value: '1'
+            - name: VMD_HINTS_FILE
+              value: /etc/voicemail-phraselist.json
+            - name: JAMBONES_INJECT_CONTENT
+              value: '1'
+            - name: K8S
+              value: '1'
+            - name: K8S_SBC_SIP_SERVICE_NAME
+              value: sbc-sip
+            - name: JAMBONES_API_BASE_URL
+              value: http://api.jambonz.local/v1
+            - name: JAMBONES_TIME_SERIES_HOST
+              value: influxdb.jambonz
+            - name: DRACHTIO_HOST
+              value: 127.0.0.1
+            - name: DRACHTIO_PORT
+              value: '9022'
+            - name: JAMBONES_FREESWITCH
+              value: 127.0.0.1:8021:JambonzR0ck$
+            - name: ENABLE_METRICS
+              value: '0'
+            - name: JAMBONZ_CLEANUP_INTERVAL_MINS
+              value: '60'
+            - name: K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: STATS_HOST
+              value: telegraf.jambonz
+            - name: STATS_PORT
+              value: '8125'
+            - name: STATS_TAGS
+              value: pod:$(K8S_POD_NAME)
+            - name: STATS_PROTOCOL
+              value: tcp
+            - name: STATS_TELEGRAF
+              value: '1'
+            - name: STATS_SAMPLE_RATE
+              value: '1'
+            - name: JAMBONES_OTEL_ENABLED
+              value: '1'
+            - name: OTEL_EXPORTER_JAEGER_ENDPOINT
+              value: http://jaeger-collector.jambonz:14268/api/traces
+            - name: OTEL_TRACES_SAMPLER
+              value: parentbased_traceidratio
+            - name: OTEL_TRACES_SAMPLER_ARG
+              value: '1'
+            - name: JAMBONES_REDIS_HOST
+              value: redis.jambonz
+            - name: JAMBONES_REDIS_PORT
+              value: '6379'
+            - name: JAMBONES_MYSQL_DATABASE
+              value: jambones
+            - name: JAMBONES_MYSQL_HOST
+              value: mysql.jambonz
+            - name: JAMBONES_MYSQL_USER
+              value: jambones
+            - name: JAMBONES_MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: jambonz-secrets
+                  key: MYSQL_PASSWORD
+            - name: DRACHTIO_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: jambonz-secrets
+                  key: DRACHTIO_SECRET
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: jambonz-secrets
+                  key: JWT_SECRET
+            - name: JAMBONZ_RECORD_WS_BASE_URL
+              value: ws://api.jambonz.local/api/v1
+            - name: JAMBONZ_RECORD_WS_USERNAME
+              value: jambonz
+            - name: JAMBONZ_RECORD_WS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: jambonz-secrets
+                  key: JWT_SECRET
+            - name: AUDIO_PATH
+              valueFrom:
+                configMapKeyRef:
+                  name: feature-server-config
+                  key: AUDIO_PATH
+          resources: {}
+          volumeMounts:
+            - name: temp-audio-volume
+              mountPath: /tmp
+            - name: voicemail-phraselist
+              mountPath: /etc/voicemail-phraselist.json
+              subPath: voicemail-phraselist.json
+            - name: audio-files
+              mountPath: /opt/audio
+            - name: feature-server-config
+              readOnly: true
+              mountPath: /etc/jambonz
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+              scheme: HTTP
+            timeoutSeconds: 1
+            periodSeconds: 10
+            successThreshold: 1
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /bin/sh
+                  - '-c'
+                  - /opt/app/bin/k8s-pre-stop-hook.js
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          imagePullPolicy: IfNotPresent
+      restartPolicy: Always
+      terminationGracePeriodSeconds: 900
+      dnsPolicy: ClusterFirst
+      securityContext: {}
+      schedulerName: default-scheduler
+      hostAliases:
+        - ip: 192.168.1.25
+          hostnames:
+            - jambonz.local
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: feature-server
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 25%
+      maxSurge: 25%
+  revisionHistoryLimit: 10
+  progressDeadlineSeconds: 600
+
+
+api-server
+sbc-outbound 
+ivr-
+
+
+load mod_sofia
+sofia profile internal start
+sofia profile external start
+
+
+
+
+/usr/local/freeswitch/bin/fs_cli -H 127.0.0.1 -P 8021 -p JambonzR0ck$
+
+syedasadabbas/sbc-outbound:latest
+syedasadabbas/feature-server:latest
+jambonz/feature-server:0.8.5-rc20
+jambonz/sbc-outbound:0.8.5
+/system-health
+
+# ---------------------------------------------
+changes in sbc-outbound deployment
+# ---------------------------------------------
+image --- jambonz/sbc-outbound:0.8.5
+livenessProbe:
+
+default ---/system-health  to /alive
+
+startupProbe:
+default ---/system-health  to /health
+startupProbe:
+
+
+# ---------------------------------------------
+changes in feature-server deployment
+# ---------------------------------------------
+image --- jambonz/feature-server:0.8.5-rc20
+
+
+
+# ---------------------------------------------
+changes in feature-server(freeswitch-mrf) deployment
+# ---------------------------------------------
+image ---- drachtio/drachtio-freeswitch-mrf:0.5.6
+
+
+
+
+mrf.xml 
+<param name="ext-rtp-ip" value="$${local_ip_v4}"/>
+<param name="ext-sip-ip" value="$${local_ip_v4}"/>
+
+# ---------------------------------------------
+freeswitch troubleshooting 
+# ---------------------------------------------
+sofia status profile drachtio_mrf
+sofia status
+playback(file:///usr/local/freeswitch/sounds/relaxing.wav)
+load mod_audio_fork
+ls /usr/local/freeswitch/mod | grep audio_fork
+show channels (during the call)
+sofia global siptrace on
+sofia global debug on
+console loglevel 9
+fs_cli -x "show"
+fs_cli -x "global_getvar"
+fs_cli -x "global_getvar" | grep RTP
+cat /usr/local/freeswitch/conf/autoload_configs/switch.conf.xml
+
+
+
+  <X-PRE-PROCESS cmd="set" data="my_local_ip4=$${local_ip_v4}"/>
+  <X-PRE-PROCESS cmd="set" data="ext_rtp_ip=$${local_ip_v4}"/>
+  <X-PRE-PROCESS cmd="set" data="ext_sip_ip=$${local_ip_v4}"/>
+
+
+
+syedasadabbas/drachtio-freeswitch-mrf-custom:0.25-700
+kubectl run freeswitch-debug -n jambonz --rm -it \
+  --image=syedasadabbas/mycustom-fsmrf:v1.0 --command -- /bin/bash
+------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: feature-server
+  namespace: jambonz
+  uid: 82d6bc84-508a-48cd-804d-ab20ea6625f7
+  resourceVersion: '1696828'
+  generation: 30
+  creationTimestamp: '2025-10-08T18:29:34Z'
+  labels:
+    app: feature-server
+    app.kubernetes.io/instance: jambonz-release
+    app.kubernetes.io/managed-by: Helm
+    k8slens-edit-resource-version: v1
+  annotations:
+    cluster-autoscaler.kubernetes.io/safe-to-evict: 'true'
+    deployment.kubernetes.io/revision: '30'
+    meta.helm.sh/release-name: jambonz-release
+    meta.helm.sh/release-namespace: jambonz
+  selfLink: /apis/apps/v1/namespaces/jambonz/deployments/feature-server
+status:
+  observedGeneration: 30
+  replicas: 1
+  updatedReplicas: 1
+  readyReplicas: 1
+  availableReplicas: 1
+  conditions:
+    - type: Progressing
+      status: 'True'
+      lastUpdateTime: '2025-10-23T19:07:59Z'
+      lastTransitionTime: '2025-10-23T18:26:18Z'
+      reason: NewReplicaSetAvailable
+      message: ReplicaSet "feature-server-d594c6654" has successfully progressed.
+    - type: Available
+      status: 'True'
+      lastUpdateTime: '2025-10-27T17:31:31Z'
+      lastTransitionTime: '2025-10-27T17:31:31Z'
+      reason: MinimumReplicasAvailable
+      message: Deployment has minimum availability.
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: feature-server
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        app: feature-server
+      annotations:
+        kubectl.kubernetes.io/restartedAt: '2025-10-23T19:07:55.370Z'
+    spec:
+      volumes:
+        - name: temp-audio-volume
+          emptyDir: {}
+        - name: voicemail-phraselist
+          configMap:
+            name: voicemail-phraselist
+            items:
+              - key: voicemail-phraselist.json
+                path: voicemail-phraselist.json
+            defaultMode: 420
+        - name: fs-avmd-conf
+          configMap:
+            name: fs-avmd-conf
+            items:
+              - key: avmd.conf.xml
+                path: avmd.conf.xml
+            defaultMode: 420
+        - name: freeswitch-mrf-config
+          configMap:
+            name: freeswitch-mrf-config
+            items:
+              - key: mrf.conf.xml
+                path: mrf.conf.xml
+            defaultMode: 420
+      initContainers:
+        - name: db-create-wait
+          image: kanisterio/mysql-sidecar:0.40.0
+          command:
+            - sh
+            - '-c'
+            - >
+              until mysql -u jambones -D jambones -h mysql.jambonz
+              -p${MYSQL_PASSWORD} --protocol=tcp -e "select count(*) from
+              accounts";
+
+              do 
+                sleep 5
+              done
+          env:
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: jambonz-secrets
+                  key: MYSQL_PASSWORD
+          resources: {}
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          imagePullPolicy: IfNotPresent
+      containers:
+        - name: drachtio
+          image: drachtio/drachtio-server:0.8.24
+          args:
+            - drachtio
+            - '--contact'
+            - sip:*:5060;transport=udp
+            - '--mtu'
+            - '4096'
+            - '--loglevel'
+            - debug
+            - sofia-loglevel
+            - '3'
+          ports:
+            - containerPort: 9022
+              protocol: TCP
+          env:
+            - name: CLOUD
+              value: none
+            - name: IMDSv2
+            - name: SOFIA_SEARCH_DOMAINS
+              value: '1'
+            - name: SOFIA_SRES_NO_CACHE
+              value: '1'
+            - name: DRACHTIO_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: jambonz-secrets
+                  key: DRACHTIO_SECRET
+          resources: {}
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /bin/sh
+                  - '-c'
+                  - >-
+                    while $(curl --output /dev/null --silent --head --fail-early
+                    http://127.0.0.1:3000); do printf '.'; sleep 10; done
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          imagePullPolicy: IfNotPresent
+        - name: freeswitch
+          image: syedasadabbas/mycustom-fsmrf:1.1
+          args:
+            - freeswitch
+            - '--codec-answer-generous'
+          ports:
+            - containerPort: 8081
+              protocol: TCP
+          env:
+            - name: MOD_AUDIO_FORK_SUBPROTOCOL_NAME
+              value: audio.jambonz.org
+            - name: MOD_AUDIO_FORK_SERVICE_THREADS
+              value: '1'
+            - name: MOD_AUDIO_FORK_BUFFER_SECS
+              value: '3'
+            - name: SOFIA_LOGLEVEL
+              value: '9'
+          resources: {}
+          volumeMounts:
+            - name: temp-audio-volume
+              mountPath: /tmp
+            - name: fs-avmd-conf
+              mountPath: /usr/local/freeswitch/conf/autoload_configs/avmd.conf.xml
+              subPath: avmd.conf.xml
+            - name: freeswitch-mrf-config
+              mountPath: >-
+                /usr/local/freeswitch/conf/autoload_configs/mod_audio_fork.conf.xml
+              subPath: mrf.conf.xml
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /bin/sh
+                  - '-c'
+                  - >-
+                    while $(curl --output /dev/null --silent --head --fail-early
+                    http://127.0.0.1:3000); do printf '.'; sleep 10; done
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          imagePullPolicy: IfNotPresent
+        - name: feature-server
+          image: syedasadabbas/feature-server:latest
+          ports:
+            - containerPort: 3000
+              protocol: TCP
+          env:
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: status.podIP
+            - name: EXT_RTP_IP
+              value: $(POD_IP)
+            - name: EXT_SIP_IP
+              value: $(POD_IP)
+            - name: AWS_REGION
+              value: us-west-1
+            - name: NODE_ENV
+              value: production
+            - name: HTTP_PORT
+              value: '3000'
+            - name: JAMBONES_LOGLEVEL
+              value: debug
+            - name: JAMBONES_TTS_TRIM_SILENCE
+              value: '1'
+            - name: VMD_HINTS_FILE
+              value: /etc/voicemail-phraselist.json
+            - name: JAMBONES_INJECT_CONTENT
+              value: '1'
+            - name: K8S
+              value: '1'
+            - name: K8S_SBC_SIP_SERVICE_NAME
+              value: sbc-sip
+            - name: JAMBONES_API_BASE_URL
+              value: http://api.jambonz.local/v1
+            - name: JAMBONES_TIME_SERIES_HOST
+              value: influxdb.jambonz
+            - name: DRACHTIO_HOST
+              value: 127.0.0.1
+            - name: DRACHTIO_PORT
+              value: '9022'
+            - name: JAMBONES_FREESWITCH
+              value: 127.0.0.1:8021:JambonzR0ck$
+            - name: ENABLE_METRICS
+              value: '0'
+            - name: JAMBONZ_CLEANUP_INTERVAL_MINS
+              value: '60'
+            - name: K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: STATS_HOST
+              value: telegraf.jambonz
+            - name: STATS_PORT
+              value: '8125'
+            - name: STATS_TAGS
+              value: pod:$(K8S_POD_NAME)
+            - name: STATS_PROTOCOL
+              value: tcp
+            - name: STATS_TELEGRAF
+              value: '1'
+            - name: STATS_SAMPLE_RATE
+              value: '1'
+            - name: JAMBONES_OTEL_ENABLED
+              value: '1'
+            - name: OTEL_EXPORTER_JAEGER_ENDPOINT
+              value: http://jaeger-collector.jambonz:14268/api/traces
+            - name: OTEL_TRACES_SAMPLER
+              value: parentbased_traceidratio
+            - name: OTEL_TRACES_SAMPLER_ARG
+              value: '1'
+            - name: JAMBONES_REDIS_HOST
+              value: redis.jambonz
+            - name: JAMBONES_REDIS_PORT
+              value: '6379'
+            - name: JAMBONES_MYSQL_DATABASE
+              value: jambones
+            - name: JAMBONES_MYSQL_HOST
+              value: mysql.jambonz
+            - name: JAMBONES_MYSQL_USER
+              value: jambones
+            - name: JAMBONES_MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: jambonz-secrets
+                  key: MYSQL_PASSWORD
+            - name: DRACHTIO_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: jambonz-secrets
+                  key: DRACHTIO_SECRET
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: jambonz-secrets
+                  key: JWT_SECRET
+            - name: JAMBONZ_RECORD_WS_BASE_URL
+              value: ws://api.jambonz.local/api/v1
+            - name: JAMBONZ_RECORD_WS_USERNAME
+              value: jambonz
+            - name: JAMBONZ_RECORD_WS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: jambonz-secrets
+                  key: JWT_SECRET
+            - name: JAMBONZ_RTPENGINES
+              value: 192.168.1.26:22222
+          resources: {}
+          volumeMounts:
+            - name: temp-audio-volume
+              mountPath: /tmp
+            - name: voicemail-phraselist
+              mountPath: /etc/voicemail-phraselist.json
+              subPath: voicemail-phraselist.json
+            - name: freeswitch-mrf-config
+              mountPath: /etc/freeswitch/autoload_configs/mod_audio_fork.conf.xml
+              subPath: mrf.conf.xml
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+              scheme: HTTP
+            timeoutSeconds: 1
+            periodSeconds: 10
+            successThreshold: 1
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /bin/sh
+                  - '-c'
+                  - /opt/app/bin/k8s-pre-stop-hook.js
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          imagePullPolicy: IfNotPresent
+      restartPolicy: Always
+      terminationGracePeriodSeconds: 900
+      dnsPolicy: ClusterFirst
+      securityContext: {}
+      schedulerName: default-scheduler
+      hostAliases:
+        - ip: 192.168.1.25
+          hostnames:
+            - jambonz.local
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: feature-server
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 25%
+      maxSurge: 25%
+  revisionHistoryLimit: 10
+  progressDeadlineSeconds: 600
+  
+  
+  -------------------------------------------
+  
+  -------------------------------------------
+  curl -X POST http://10.43.252.59:3000/v1/Accounts/9351f46a-678c-43f5-b8a6-d4eb58d131af/Calls \
+  -H "Authorization: Bearer 1cf2f4f4-64c4-4249-9a3e-5bb4cb597c2a" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "from": "FreeSWITCH",
+    "to": { "type": "user", "name": "3000@192.168.1.27:5060" },
+    "application_sid": "f62d62be-16d8-4f85-afa1-e1689bc8c014",
+    "call_hook": { "url": "http://192.168.1.25:5000/outbound" },
+    "call_status_hook": { "url": "http://192.168.1.25:5000/status" }
+  }'
+
+and 
+
+
+curl -X POST http://localhost:3000/v1/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin", "password":"Asadabbas/44"}'
+
+
+
+-------------------------------------------------
+mysql 
+------------------------------------------------
+# 1. Attach trunk to account
+mysql -e "UPDATE voip_carriers SET account_sid='82d07872-8621-4c6b-a72c-681876637789' WHERE name='voip-provider';"
+
+# 2. Get your ACCOUNT API key
+mysql -e "SELECT api_key FROM api_keys WHERE account_sid='82d07872-8621-4c6b-a72c-681876637789' AND scope='account';"
+
+# 3. Paste key into KEY = '...' above, then run
+node webhook6.js
+
+
+mysql> SELECT token FROM api_keys WHERE account_sid='82d07872-8621-4c6b-a72c-681876637789';
++--------------------------------------+
+| token                                |
++--------------------------------------+
+| 1ac540d4-7f45-4716-b4f3-0eda425b3783 |
++--------------------------------------+
+1 row in set (0.00 sec)
+
+mysql> 
+
+
+mysql> 
+mysql> SELECT * FROM sbc_addresses;
++--------------------------------------+----------------------------------------+------+----------+----------+----------------------+---------------------+
+| sbc_address_sid                      | ipv4                                   | port | tls_port | wss_port | service_provider_sid | last_updated        |
++--------------------------------------+----------------------------------------+------+----------+----------+----------------------+---------------------+
+| 495ba1ea-e425-44e9-9fe1-d4ed5eadfec3 | 127.0.0.1                              | 5060 |     NULL |     NULL | NULL                 | 2025-11-04 16:44:20 |
+| 7cda46c4-70b4-43eb-bcb9-30c6d88b786e | [::1]                                  | 5060 |     NULL |     NULL | NULL                 | 2025-11-04 16:44:20 |
+| c70206d0-5a0d-4d5f-8df3-6496a8ce8a07 | [2400:adc7:91f:700:20c:29ff:fee2:659b] | 5060 |     NULL |     NULL | NULL                 | 2025-11-04 16:44:20 |
++--------------------------------------+----------------------------------------+------+----------+----------+----------------------+---------------------+
+3 rows in set (0.00 sec)
+
+
+
+
+UPDATE sbc_addresses 
+    -> SET ipv4 = '10.42.0.225', port = 5080, last_updated = NOW()
+    -> WHERE ipv4 IN ('127.0.0.1', '[::1]', '[2400:adc7:91f:700:20c:29ff:fee2:659b]');
+Query OK, 3 rows affected (0.01 sec)
+Rows matched: 3  Changed: 3  Warnings: 0
+
+
+--------------------------------------
+ - name: K8S_FEATURE_SERVER_SERVICE_NAME
+              value: feature-server
+              
+----------------------------------------
+curl command that hits the feature server 
+---------------------------------------
+curl -X POST http://10.43.252.59:3000/v1/Accounts/82d07872-8621-4c6b-a72c-681876637789/Calls \
+  -H "Authorization: Bearer 1ac540d4-7f45-4716-b4f3-0eda425b3783" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "from": "999",
+    "to": { "type": "phone", "number": "1000", "trunk": "voip-provider" },
+    "application_sid": "f62d62be-16d8-4f85-afa1-e1689bc8c014",
+    "call_hook": { "url": "http://192.168.1.25:5000/outbound" },
+    "call_status_hook": { "url": "http://192.168.1.25:5000/status" }
+  }' -i
+
+----------------------------------------
+working curl command 
+---------------------------------------
+  curl -X POST http://10.43.252.59:3000/v1/Accounts/82d07872-8621-4c6b-a72c-681876637789/Calls \
+  -H "Authorization: Bearer 1ac540d4-7f45-4716-b4f3-0eda425b3783" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "from": "999",
+    "to": { "type": "phone", "number": "1000", "trunk": "voip-provider" },
+    "application_sid": "f62d62be-16d8-4f85-afa1-e1689bc8c014",
+    "call_hook": { "url": "http://192.168.1.25:5000/outbound" },
+    "call_status_hook": { "url": "http://192.168.1.25:5000/status" }
+  }' -i
+
+
+  curl -X POST http://10.43.252.59:3000/v1/Accounts/82d07872-8621-4c6b-a72c-681876637789/Calls \
+  -H "Authorization: Bearer 1ac540d4-7f45-4716-b4f3-0eda425b3783" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "from": "999",
+    "to": { "type": "phone", "number": "3000", "trunk": "voip-provider" },
+    "application_sid": "f62d62be-16d8-4f85-afa1-e1689bc8c014",
+    "call_hook": { "url": "http://192.168.1.25:5000/outbound" },
+    "call_status_hook": { "url": "http://192.168.1.25:5000/status" }
+  }' -i
+  
+   curl -X POST http://10.43.19.39:3000/v1/Accounts/9351f46a-678c-43f5-b8a6-d4eb58d131af/Calls \
+  -H "Authorization: Bearer 1cf2f4f4-64c4-4249-9a3e-5bb4cb597c2a" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "from": "999",
+    "to": { "type": "phone", "number": "+14099168086", "trunk": "Twilio" },
+    "application_sid": "d0705a36-7e33-47ce-8db6-33628de368ef",
+    "call_hook": { "url": "http://10.43.113.21:3004/outbound" },
+    "call_status_hook": { "url": "http://10.43.113.21:3004/status" }
+  }' -i
+-----------------------------
+
+<include>
+  <extension name="jambonz-tcp-5062">
+    <condition field="${sip_h_X-trunk}" expression="^voip-provider$">
+      <!-- Force TCP + exact port Zoiper uses -->
+      <action application="set" data="domain_name=jambonz.custom" inline="true"/>
+      <action application="set" data="sip_h_X-transport=tcp" inline="true"/>
+      <action application="set" data="effective_caller_id_number=999" inline="true"/>
+      <action application="bridge" data="user/${destination_number}@jambonz.custom"/>
+    </condition>
+  </extension>
+</include>
+---------------------
+
+
+curl -X POST http://10.43.19.39:3000/v1/Accounts/9351f46a-678c-43f5-b8a6-d4eb58d131af/Calls \
+  -H "Authorization: Bearer 1cf2f4f4-64c4-4249-9a3e-5bb4cb597c2a" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "numberTo": "14099168086",
+    "numberFrom": "999",
+    "prefix": "305195",
+    "wavUrlAnnounce": "https://rvm.nyc3.digitaloceanspaces.com/RVM/1729263781.wav",
+    "wavUrlContinue": "https://ivr-app.sptm.space/sounds/pls-wait-connect-call.wav",
+    "wavUrlOptOut": "https://ivr-app.sptm.space/sounds/goodbye.wav",
+    "wavUrlVM": "https://rvm.nyc3.digitaloceanspaces.com/RVM/1733352752.wav",
+    "transactionId": "1234567345234512",
+    "carrierAddress": "main",
+    "destinationAddress": "+17182444444",
+    "digitContinue": "1",
+    "digitOptOut": "3"
+  }'
+
+ curl -X POST http://10.43.19.39:3000/v1/Accounts/9351f46a-678c-43f5-b8a6-d4eb58d131af/Calls \
+  -H "Authorization: Bearer 1cf2f4f4-64c4-4249-9a3e-5bb4cb597c2a" \
+  -H "Content-Type: application/json" \
+  -d '{
+  "numberTo": "14243022903",
+    "numberFrom": "18008136570",
+    "prefix": "305195",
+     "application_sid": "d0705a36-7e33-47ce-8db6-33628de368ef",
+    "call_hook": { "url": "http://10.43.113.21:3004/outbound" },
+    "call_status_hook": { "url": "http://10.43.113.21:3004/status" },
+    "carrierAddress": "main",
+    "destinationAddress": "+14099168086",
+    
+    
+    
+
+
+curl -X POST http://10.43.19.39:3000/v1/Accounts/9351f46a-678c-43f5-b8a6-d4eb58d131af/Calls \
+  -H "Authorization: Bearer 1cf2f4f4-64c4-4249-9a3e-5bb4cb597c2a" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "numberTo": "14099168086",
+    "numberFrom": "18008136570",
+    "prefix": "305195",
+    "application_sid": "d0705a36-7e33-47ce-8db6-33628de368ef",
+    "call_hook": { "url": "http://10.43.113.21:3004/outbound" },
+    "call_status_hook": { "url": "http://10.43.113.21:3004/status" }'
+  
