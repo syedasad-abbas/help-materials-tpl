@@ -1,0 +1,116 @@
+✅ Step 1: Install Dependencies
+ sudo apt update
+sudo apt install -y build-essential git wget subversion \
+libjansson-dev libxml2-dev uuid-dev libncurses5-dev \
+libsqlite3-dev pkg-config libssl-dev libedit-dev
+
+
+
+sudo asterisk -rvvv
+module reload
+pjsip show endpoints
+pjsip show endpoints
+
+https://jitsitest
+
+sudo hostnamectl set-hostname jitsi_test
+
+124.29.212.49 https://jitsitest
+
+
+Setting up jitsi-meet-web-config (1.0.8877-1) ...
+......+..............+.+.....+.+........+.............+..+.+......+...+...+.....+...+.+.........+...........+...+.+......+...+..+..........+...+.....+...+.........+.+..+.+++++++++++++++++++++++++++++++++++
+++++++++++++++++++++++++++++++*....+.......+...+..+......+....+..+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*..+...............+...+.++++++++++++++++++++++++++++++++++++++++++++++++++
++++++++++++++++
+...+......+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.......+.....+....+.....+......+.........+....+.........+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*...+...
+...........+...................+......+...+...+..+...+.........+......+.......+........+.............+...............+..+...+.+.....+.........+......+.+........+++++++++++++++++++++++++++++++++++++++++++++
+++++++++++++++++++++
+-----
+
+
+       ;dOocd;
+     .dNMM0dKO.
+     lNMMMKd0K,
+    .xMMMMNxkNc
+     dMMMMMkxXc
+     cNMMMNl..
+     .kMMMX;             Interested in adding telephony to your Jitsi meetings?
+      ;XMMMO'
+       lNMMWO'           Sign up on https://jaas.8x8.vc/components?host=jitsitest
+        lNMMM0,                        and follow the guide in the dev console.
+         lXMMMK:.
+          ;KMMMNKd.  'oo,
+           'xNMMMMXkkkkOKOl'
+             :0WMMMMMMNOkk0Kk,
+              .cdOWMMMMMWXOkOl
+                 .;dKWMMMMMXc.
+                    .,:cll:'
+
+
+Selecting previously unselected package jitsi-meet-turnserver.
+
+
+
+✅ How to Enable & Register Users in Jitsi (Step-by-Step)
+
+You must configure Prosody authentication to allow user accounts.
+
+STEP 1 — Edit Prosody Config
+
+Open the main domain config:
+
+sudo nano /etc/prosody/conf.avail/jitsitest.cfg.lua
+
+
+Find this block:
+
+authentication = "anonymous"
+
+
+Change it to:
+
+authentication = "internal_hashed"
+
+
+Save & exit.
+
+STEP 2 — Create a Prosody User
+
+After enabling internal authentication:
+
+sudo prosodyctl register username jitsitest password123
+
+
+Example:
+
+sudo prosodyctl register asad jitsitest MyStrongPassword
+
+
+This creates a local account stored by Prosody.
+
+STEP 3 — Restart Jitsi Services
+sudo systemctl restart prosody
+sudo systemctl restart jicofo
+sudo systemctl restart jitsi-videobridge2
+
+STEP 4 — Try Opening Jitsi Meet
+
+Go to:
+
+https://jitsitest
+
+
+Now when you try to create a meeting, it will ask for a username + password.
+
+Login with:
+
+username: asad
+password: MyStrongPassword
+
+
+
+authentication = "jitsi-anonymous"
+
+User account created: 1001@jitsitest
+
+

@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>FreeSWITCH WebRTC Test 2025</title>
+<style>
+  body {font-family:Arial;background:#000;color:#0f0;padding:30px;}
+  #status {font-size:22px;margin:20px 0;font-weight:bold;}
+  .green {color:#0f0;} 
+  .red {color:#f66;}
+  input,button {font-size:20px;padding:12px;margin:8px;}
+</style>
+</head>
+
+<body>
+
+<h1>FreeSWITCH WebRTC Phone</h1>
+
+<div id="status">Loading SIP...</div>
+
+<input id="ext" value="9999" placeholder="Extension">
+<button onclick="call()">Call</button>
+<button onclick="hangup()">Hangup</button>
+<button onclick="location.reload()">Reload</button>
+
+<!-- Hidden audio for remote media -->
+<audio id="remoteAudio" autoplay></audio>
+
+<script src="sip.min.js"></script>
+
+<script>
+const USER = "1001";
+const PASS = "test123";
+const SERVER = "192.168.1.20";
+
+let ua = null;
+let currentSession = null;
+
+function log(msg, color = "") {
+  const s = document.getElementById('status');
+  if (!s) { console.error("Missing #status element!"); return; }
+  s.innerHTML = color ? `<span class="${color}">${msg}</span>` : msg;
+  console.log(msg);
+}
+
+function attachMedia(handler) {
+  if (!handler) return;
+  const pc = handler.peerConnection;
+  const remoteAudio = document.getElementById("remoteAudio");
+
+  pc.getReceivers().forEach(receiver => {
+    if (receiver.track && receiver.track.kind === "audio") {
+      const stream = new MediaStream([receiver.track]);
+      remoteAudio.srcObject = stream;
+    }
+  });
+}
+window.onload = () => {
+  log("Connecting to WSS WebSocket...");
+
+  // 1️⃣ Create the UserAgent
+  ua = new SIP.UserAgent({
+    uri: SIP.UserAgent.makeURI(`sip:${USER}@${SERVER}`),
+    transportOptions: { server: `wss://${SERVER}:7443` },
+    authorizationUsername: USER,
+    authorizationPassword: PASS,
+    log: { builtinEnabled: true, level: "debug" }
+  });
+
+  // 2️⃣ Handle incoming calls
+  ua.delegate = {
+    onInvite: (invitation) => {
+      log("Incoming call – answering...", "green");
+      currentSession = invitation;
+      invitation.accept().then(() => attachMedia(invitation.sessionDescriptionHandler));
+    }
+  };
+
+  // 3️⃣ Start the UserAgent
+  ua.start()
+    .then(() => {
+      log("Connected to SIP server, registering...", "green");
+
+      // 4️⃣ Create the Registerer
+      registerer = new SIP.Registerer(ua);
+      
+      // 5️⃣ Register with the SIP server
+      registerer.register()
+        .then(() => log("REGISTERED – ONLINE!", "green"))
+        .catch(err => log("Register failed: " + err.message, "red"));
+    })
+    .catch(err => log("Failed: " + err.message, "red"));
+};
+
+</script>
+
+</body>
+</html>
+
