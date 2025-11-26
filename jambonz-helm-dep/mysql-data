@@ -1,0 +1,175 @@
+piVersion: v1
+kind: Pod
+metadata:
+  name: mysql-0
+  generateName: mysql-
+  namespace: jambonz
+  uid: f5ef2822-6c8a-45df-aaa9-a325415b0025
+  resourceVersion: '2784619'
+  creationTimestamp: '2025-10-14T19:51:32Z'
+  labels:
+    app: mysql
+    apps.kubernetes.io/pod-index: '0'
+    controller-revision-hash: mysql-5b45565f88
+    statefulset.kubernetes.io/pod-name: mysql-0
+  annotations:
+    cni.projectcalico.org/containerID: f1a752660a87f278f3eb4239d46447b83138f215fd890ece2f011897f4d7dda1
+    cni.projectcalico.org/podIP: 10.42.0.26/32
+    cni.projectcalico.org/podIPs: 10.42.0.26/32
+  ownerReferences:
+    - apiVersion: apps/v1
+      kind: StatefulSet
+      name: mysql
+      uid: 1ced0007-da8b-47b8-919c-3dad8497bcaf
+      controller: true
+      blockOwnerDeletion: true
+  selfLink: /api/v1/namespaces/jambonz/pods/mysql-0
+status:
+  phase: Running
+  conditions:
+    - type: PodReadyToStartContainers
+      status: 'True'
+      lastProbeTime: null
+      lastTransitionTime: '2025-11-26T16:46:53Z'
+    - type: Initialized
+      status: 'True'
+      lastProbeTime: null
+      lastTransitionTime: '2025-10-14T19:58:39Z'
+    - type: Ready
+      status: 'True'
+      lastProbeTime: null
+      lastTransitionTime: '2025-11-26T16:46:53Z'
+    - type: ContainersReady
+      status: 'True'
+      lastProbeTime: null
+      lastTransitionTime: '2025-11-26T16:46:53Z'
+    - type: PodScheduled
+      status: 'True'
+      lastProbeTime: null
+      lastTransitionTime: '2025-10-14T19:58:39Z'
+  hostIP: 192.168.1.23
+  hostIPs:
+    - ip: 192.168.1.23
+    - ip: 2400:adc7:91f:700:20c:29ff:fe31:90a1
+  podIP: 10.42.0.26
+  podIPs:
+    - ip: 10.42.0.26
+  startTime: '2025-10-14T19:58:39Z'
+  containerStatuses:
+    - name: mysql
+      state:
+        running:
+          startedAt: '2025-11-26T16:46:53Z'
+      lastState:
+        terminated:
+          exitCode: 255
+          reason: Unknown
+          startedAt: '2025-11-25T21:47:50Z'
+          finishedAt: '2025-11-26T16:45:13Z'
+          containerID: >-
+            containerd://822844422763bf442380cfdc43b9f5746f7c51becc41300f25d83ba3fb4a8a11
+      ready: true
+      restartCount: 47
+      image: docker.io/library/mysql:5.7
+      imageID: >-
+        docker.io/library/mysql@sha256:4bc6bc963e6d8443453676cae56536f4b8156d78bae03c0145cbe47c2aad73bb
+      containerID: >-
+        containerd://3bb59466e808168d772ee3901c51b1d94d8cea1adae32fd65d6ddf66cfac2634
+      started: true
+      volumeMounts:
+        - name: mysql-claim
+          mountPath: /var/lib/mysql
+        - name: kube-api-access-9jvnn
+          mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+          readOnly: true
+          recursiveReadOnly: Disabled
+  qosClass: BestEffort
+spec:
+  volumes:
+    - name: mysql-claim
+      persistentVolumeClaim:
+        claimName: mysql-claim-mysql-0
+    - name: kube-api-access-9jvnn
+      projected:
+        sources:
+          - serviceAccountToken:
+              expirationSeconds: 3607
+              path: token
+          - configMap:
+              name: kube-root-ca.crt
+              items:
+                - key: ca.crt
+                  path: ca.crt
+          - downwardAPI:
+              items:
+                - path: namespace
+                  fieldRef:
+                    apiVersion: v1
+                    fieldPath: metadata.namespace
+        defaultMode: 420
+  containers:
+    - name: mysql
+      image: mysql:5.7
+      args:
+        - '--ignore-db-dir=lost+found'
+      ports:
+        - containerPort: 3306
+          protocol: TCP
+      env:
+        - name: MYSQL_ALLOW_EMPTY_PASSWORD
+          value: 'yes'
+        - name: MYSQL_DATABASE
+          value: jambones
+        - name: MYSQL_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: db-secrets
+              key: MYSQL_PASSWORD
+        - name: MYSQL_USER
+          value: jambones
+      resources: {}
+      volumeMounts:
+        - name: mysql-claim
+          mountPath: /var/lib/mysql
+        - name: kube-api-access-9jvnn
+          readOnly: true
+          mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+      livenessProbe:
+        exec:
+          command:
+            - mysqladmin
+            - ping
+            - '-h'
+            - 127.0.0.1
+            - '--protocol'
+            - tcp
+        timeoutSeconds: 5
+        periodSeconds: 10
+        successThreshold: 1
+        failureThreshold: 10
+      terminationMessagePath: /dev/termination-log
+      terminationMessagePolicy: File
+      imagePullPolicy: IfNotPresent
+  restartPolicy: Always
+  terminationGracePeriodSeconds: 30
+  dnsPolicy: ClusterFirst
+  serviceAccountName: default
+  serviceAccount: default
+  nodeName: node-01
+  securityContext: {}
+  hostname: mysql-0
+  subdomain: mysql
+  schedulerName: default-scheduler
+  tolerations:
+    - key: node.kubernetes.io/not-ready
+      operator: Exists
+      effect: NoExecute
+      tolerationSeconds: 300
+    - key: node.kubernetes.io/unreachable
+      operator: Exists
+      effect: NoExecute
+      tolerationSeconds: 300
+  priority: 0
+  enableServiceLinks: true
+  preemptionPolicy: PreemptLowerPriority
+
